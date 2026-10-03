@@ -2,28 +2,22 @@ name: Build iXgram 2.0
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
 
 permissions:
   contents: read
 
 jobs:
   build:
-    runs-on: macos-14
+    runs-on: macos-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Theos
-        uses: beerpiss/theos-action@v1
-        with:
-          theos-dir: ${{ github.workspace }}/theos
-          theos-src: https://github.com/theos/theos
-          theos-sdks: https://github.com/theos/sdks
-          cache: true
-
       - name: Extract source
-        shell: bash
         run: |
           set -e
           ZIP="$(find . -maxdepth 2 -type f -name '*.zip' | head -n 1)"
@@ -32,43 +26,40 @@ jobs:
           unzip -q "$ZIP" -d source
 
       - name: Find project
-        shell: bash
         run: |
           set -e
           MAKEFILE="$(find source -type f -name Makefile | head -n 1)"
           test -n "$MAKEFILE"
           echo "PROJECT_DIR=$(dirname "$MAKEFILE")" >> "$GITHUB_ENV"
 
+      - name: Setup Theos
+        uses: waruhachi/theos-action@v2.6.3
+        with:
+          theos-src: waruhachi/theos
+          theos-branch: main
+          sdks-src: waruhachi/sdks
+          sdks-branch: main
+
       - name: Build
-        shell: bash
         run: |
           set -e
-          export THEOS="$GITHUB_WORKSPACE/theos"
           cd "$PROJECT_DIR"
-          make clean || true
-          make package FINALPACKAGE=1
+          make clean package FINALPACKAGE=1
 
-      - name: Collect Dylib
-        shell: bash
+      - name: Collect output
         run: |
           set -e
           mkdir -p artifacts
 
           find "$PROJECT_DIR" \
             -type f \
-            -name '*.dylib' \
-            -not -path '*/.theos/*' \
+            \( -name "*.dylib" -o -name "*.deb" -o -name "*.ipa" \) \
+            -not -path "*/.theos/*" \
             -exec cp {} artifacts/ \;
 
-          test -n "$(find artifacts -name '*.dylib' -print -quit)"
+          find artifacts -type f -print
 
-      - name: Collect packages
-        shell: bash
-        run: |
-          find "$PROJECT_DIR" \
-            -type f \
-            \( -name '*.deb' -o -name '*.ipa' \) \
-            -exec cp {} artifacts/ \; || true
+          test -n "$(find artifacts -type f -print -quit)"
 
       - name: Upload
         uses: actions/upload-artifact@v4
