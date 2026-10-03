@@ -1,4 +1,4 @@
-name: Build iXgram 2.0
+name: Build iXgram TGExtra
 
 on:
   workflow_dispatch:
@@ -11,59 +11,140 @@ permissions:
 
 jobs:
   build:
+    name: Build TGExtra
     runs-on: macos-latest
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Extract source
+      - name: Find and extract source ZIP
+        shell: bash
         run: |
-          set -e
-          ZIP="$(find . -maxdepth 2 -type f -name '*.zip' | head -n 1)"
-          test -n "$ZIP"
-          mkdir source
-          unzip -q "$ZIP" -d source
+          set -euo pipefail
 
-      - name: Find project
-        run: |
-          set -e
-          MAKEFILE="$(find source -type f -name Makefile | head -n 1)"
-          test -n "$MAKEFILE"
-          echo "PROJECT_DIR=$(dirname "$MAKEFILE")" >> "$GITHUB_ENV"
+          ZIP_FILE="$(find . -maxdepth 2 -type f -name '*.zip' | head -n 1)"
 
-      - name: Setup Theos
-        uses: waruhachi/theos-action@v2.6.3
+          if [ -z "$ZIP_FILE" ]; then
+            echo "ERROR: No source ZIP file was found."
+            exit 1
+          fi
+
+          echo "Using ZIP: $ZIP_FILE"
+
+          rm -rf build-source
+          mkdir -p build-source
+
+          unzip -q "$ZIP_FILE" -d build-source
+
+          MAKEFILE="$(find build-source -type f -name Makefile | head -n 1)"
+
+          if [ -z "$MAKEFILE" ]; then
+            echo "ERROR: Makefile was not found after extraction."
+            find build-source -maxdepth 4 -type f | head -100
+            exit 1
+          fi
+
+          PROJECT_DIR="$(dirname "$MAKEFILE")"
+
+          echo "Project directory:"
+          echo "$PROJECT_DIR"
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+      - name: Set up Theos
+        uses: waruhachi/theos-action@v2.4.6
         with:
           theos-src: waruhachi/theos
           theos-branch: main
           sdks-src: waruhachi/sdks
           sdks-branch: main
 
-      - name: Build
+      - name: Verify source
+        shell: bash
         run: |
-          set -e
+          set -euo pipefail
+
           cd "$PROJECT_DIR"
-          make clean package FINALPACKAGE=1
 
-      - name: Collect output
+          echo "=== Project files ==="
+          ls -la
+
+          echo "=== Makefile ==="
+          test -f Makefile
+
+          echo "=== Sources ==="
+          test -d Sources
+
+          echo "=== Theos ==="
+          test -n "${THEOS:-}"
+
+          echo "THEOS=$THEOS"
+          echo "Source verification complete."
+
+      - name: Clean previous build
+        shell: bash
         run: |
-          set -e
-          mkdir -p artifacts
+          set -euo pipefail
+          cd "$PROJECT_DIR"
+          make clean || true
 
-          find "$PROJECT_DIR" \
-            -type f \
-            \( -name "*.dylib" -o -name "*.deb" -o -name "*.ipa" \) \
-            -not -path "*/.theos/*" \
-            -exec cp {} artifacts/ \;
+      - name: Build TGExtra
+        shell: bash
+        run: |
+          set -euo pipefail
 
-          find artifacts -type f -print
+          cd "$PROJECT_DIR"
 
-          test -n "$(find artifacts -type f -print -quit)"
+          echo "======================================"
+          echo "Building iXgram TGExtra"
+          echo "======================================"
 
-      - name: Upload
+          make package \
+            FINALPACKAGE=1 \
+            STRIP=0 \
+            THEOS_PACKAGE_SCHEME=rootless
+
+      - name: Locate build output
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "=== Packages ==="
+          find "$PROJECT_DIR/packages" -type f -maxdepth 2 -print 2>/dev/null || true
+
+          echo "=== Dylibs ==="
+          find "$PROJECT_DIR/.theos" -type f -name '*.dylib' -print 2>/dev/null || true
+
+          Dylib="$(find "$PROJECT_DIR" -type f -name 'TGExtra.dylib' | head -n 1)"
+
+          if [ -z "$Dylib" ]; then
+            echo "ERROR: TGExtra.dylib was not produced."
+            exit 1
+          fi
+
+          echo "Found dylib:"
+          echo "$Dylib"
+
+          mkdir -p "$GITHUB_WORKSPACE/output"
+
+          cp "$Dylib" "$GITHUB_WORKSPACE/output/iXgram.dylib"
+
+          find "$PROJECT_DIR/packages" -type f -name '*.deb' -exec cp {} "$GITHUB_WORKSPACE/output/" \; 2>/dev/null || true
+
+      - name: Show final files
+        shell: bash
+        run: |
+          echo "======================================"
+          echo "iXgram build output"
+          echo "======================================"
+
+          ls -lh "$GITHUB_WORKSPACE/output"
+
+      - name: Upload iXgram build
         uses: actions/upload-artifact@v4
         with:
-          name: iXgram-2.0-build
-          path: artifacts
+          name: iXgram-build
+          path: output/
           if-no-files-found: error
+          retention-days: 30
