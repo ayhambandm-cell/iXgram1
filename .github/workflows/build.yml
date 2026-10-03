@@ -18,15 +18,14 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Check uploaded source
+      - name: Show repository files
         run: |
-          echo "Repository:"
+          echo "===== Repository ====="
           pwd
           echo
-          echo "Files:"
-          find . -maxdepth 3 -type f | sort
+          find . -maxdepth 4 -type f | sort
 
-      - name: Install dependencies
+      - name: Install build dependencies
         run: |
           brew update
           brew install ldid xz
@@ -39,65 +38,81 @@ jobs:
           theos-sdks: https://github.com/theos/sdks
           cache: true
 
-      - name: Extract iXgram source
+      - name: Find source ZIP
         shell: bash
         run: |
           set -e
 
-          ZIP="iX_2.0_TGExtra_no_mac_build.zip"
+          ZIP="$(find . -maxdepth 2 -type f -name '*.zip' | head -n 1)"
 
-          if [ ! -f "$ZIP" ]; then
-            echo "ERROR: $ZIP was not found."
+          if [ -z "$ZIP" ]; then
+            echo "ERROR: No source ZIP was found."
             exit 1
           fi
 
-          mkdir -p source
-          unzip -q "$ZIP" -d source
+          echo "SOURCE_ZIP=$ZIP" >> "$GITHUB_ENV"
+          echo "Found source: $ZIP"
 
-          echo "Extracted source:"
-          find source -maxdepth 5 -type f | sort
+      - name: Extract source
+        shell: bash
+        run: |
+          set -e
+
+          rm -rf source
+          mkdir -p source
+
+          unzip -q "$SOURCE_ZIP" -d source
+
+          echo "===== Extracted source ====="
+          find source -maxdepth 6 -type f | sort
 
       - name: Locate Theos project
         shell: bash
         run: |
           set -e
 
-          PROJECT_MAKEFILE="$(find source -name Makefile -type f | head -n 1)"
+          MAKEFILE="$(find source -type f -name 'Makefile' | head -n 1)"
 
-          if [ -z "$PROJECT_MAKEFILE" ]; then
-            echo "ERROR: No Makefile was found inside the uploaded source."
+          if [ -z "$MAKEFILE" ]; then
+            echo "ERROR: No Makefile was found in the source."
+            echo
+            echo "The uploaded ZIP may not contain a Theos project."
             exit 1
           fi
 
-          PROJECT_DIR="$(dirname "$PROJECT_MAKEFILE")"
-
-          echo "Project Makefile:"
-          echo "$PROJECT_MAKEFILE"
-
-          echo "Project directory:"
-          echo "$PROJECT_DIR"
+          PROJECT_DIR="$(dirname "$MAKEFILE")"
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
-      - name: Show project configuration
-        run: |
-          cd "$PROJECT_DIR"
-
-          echo "===== Makefile ====="
-          sed -n '1,240p' Makefile || true
+          echo "Makefile:"
+          echo "$MAKEFILE"
 
           echo
-          echo "===== Project files ====="
-          find . -maxdepth 4 -type f | sort
+          echo "Project directory:"
+          echo "$PROJECT_DIR"
 
-      - name: Build iXgram
+      - name: Inspect project
         shell: bash
         run: |
           set -e
 
           cd "$PROJECT_DIR"
 
+          echo "===== Makefile ====="
+          cat Makefile
+
+          echo
+          echo "===== Project files ====="
+          find . -maxdepth 6 -type f | sort
+
+      - name: Build
+        shell: bash
+        run: |
+          set -e
+
           export THEOS="${GITHUB_WORKSPACE}/theos"
+
+          cd "$PROJECT_DIR"
 
           echo "THEOS=$THEOS"
           echo "PROJECT=$PWD"
@@ -106,56 +121,40 @@ jobs:
 
           make package FINALPACKAGE=1
 
-      - name: Locate build outputs
-        shell: bash
-        run: |
-          set -e
-
-          echo "===== All possible outputs ====="
-
-          find "$PROJECT_DIR" \
-            -type f \
-            \( \
-              -name "*.dylib" \
-              -o -name "*.deb" \
-              -o -name "*.ipa" \
-              -o -name "*.framework" \
-              -o -name "*.zip" \
-            \) \
-            -print
-
-      - name: Collect Dylib
+      - name: Find Dylib
         shell: bash
         run: |
           set -e
 
           mkdir -p artifacts
 
-          FOUND=0
+          echo "===== Searching for dylib ====="
 
-          while IFS= read -r file; do
-            echo "Found Dylib: $file"
-            cp "$file" "artifacts/$(basename "$file")"
-            FOUND=1
-          done < <(
-            find "$PROJECT_DIR" \
-              -type f \
-              -name "*.dylib" \
-              -not -path "*/.theos/*"
-          )
+          find "$PROJECT_DIR" \
+            -type f \
+            -name "*.dylib" \
+            -not -path "*/.theos/*" \
+            -print
 
-          if [ "$FOUND" -eq 0 ]; then
-            echo "ERROR: No Dylib was produced."
+          DYLIB="$(find "$PROJECT_DIR" \
+            -type f \
+            -name "*.dylib" \
+            -not -path "*/.theos/*" \
+            | head -n 1)"
+
+          if [ -z "$DYLIB" ]; then
             echo
-            echo "The build may have produced a package instead."
+            echo "ERROR: Build completed but no dylib was found."
             exit 1
           fi
 
           echo
-          echo "===== Dylib artifacts ====="
-          ls -lah artifacts
+          echo "Dylib found:"
+          echo "$DYLIB"
 
-      - name: Collect packages
+          cp "$DYLIB" artifacts/
+
+      - name: Find packages
         shell: bash
         run: |
           set -e
@@ -168,9 +167,14 @@ jobs:
             -exec cp {} artifacts/packages/ \; || true
 
           echo "===== Packages ====="
-          find artifacts/packages -type f -maxdepth 1 -print || true
+          find artifacts/packages -type f -print || true
 
-      - name: Upload iXgram artifacts
+      - name: Show final artifacts
+        run: |
+          echo "===== FINAL BUILD ====="
+          find artifacts -type f -exec ls -lh {} \;
+
+      - name: Upload build
         uses: actions/upload-artifact@v4
         with:
           name: iXgram-2.0-build
