@@ -1,0 +1,179 @@
+name: Build iXgram 2.0
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build iXgram 2.0
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check uploaded source
+        run: |
+          echo "Repository:"
+          pwd
+          echo
+          echo "Files:"
+          find . -maxdepth 3 -type f | sort
+
+      - name: Install dependencies
+        run: |
+          brew update
+          brew install ldid xz
+
+      - name: Setup Theos
+        uses: beerpiss/theos-action@v1
+        with:
+          theos-dir: ${{ github.workspace }}/theos
+          theos-src: https://github.com/theos/theos
+          theos-sdks: https://github.com/theos/sdks
+          cache: true
+
+      - name: Extract iXgram source
+        shell: bash
+        run: |
+          set -e
+
+          ZIP="iX_2.0_TGExtra_no_mac_build.zip"
+
+          if [ ! -f "$ZIP" ]; then
+            echo "ERROR: $ZIP was not found."
+            exit 1
+          fi
+
+          mkdir -p source
+          unzip -q "$ZIP" -d source
+
+          echo "Extracted source:"
+          find source -maxdepth 5 -type f | sort
+
+      - name: Locate Theos project
+        shell: bash
+        run: |
+          set -e
+
+          PROJECT_MAKEFILE="$(find source -name Makefile -type f | head -n 1)"
+
+          if [ -z "$PROJECT_MAKEFILE" ]; then
+            echo "ERROR: No Makefile was found inside the uploaded source."
+            exit 1
+          fi
+
+          PROJECT_DIR="$(dirname "$PROJECT_MAKEFILE")"
+
+          echo "Project Makefile:"
+          echo "$PROJECT_MAKEFILE"
+
+          echo "Project directory:"
+          echo "$PROJECT_DIR"
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+      - name: Show project configuration
+        run: |
+          cd "$PROJECT_DIR"
+
+          echo "===== Makefile ====="
+          sed -n '1,240p' Makefile || true
+
+          echo
+          echo "===== Project files ====="
+          find . -maxdepth 4 -type f | sort
+
+      - name: Build iXgram
+        shell: bash
+        run: |
+          set -e
+
+          cd "$PROJECT_DIR"
+
+          export THEOS="${GITHUB_WORKSPACE}/theos"
+
+          echo "THEOS=$THEOS"
+          echo "PROJECT=$PWD"
+
+          make clean || true
+
+          make package FINALPACKAGE=1
+
+      - name: Locate build outputs
+        shell: bash
+        run: |
+          set -e
+
+          echo "===== All possible outputs ====="
+
+          find "$PROJECT_DIR" \
+            -type f \
+            \( \
+              -name "*.dylib" \
+              -o -name "*.deb" \
+              -o -name "*.ipa" \
+              -o -name "*.framework" \
+              -o -name "*.zip" \
+            \) \
+            -print
+
+      - name: Collect Dylib
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p artifacts
+
+          FOUND=0
+
+          while IFS= read -r file; do
+            echo "Found Dylib: $file"
+            cp "$file" "artifacts/$(basename "$file")"
+            FOUND=1
+          done < <(
+            find "$PROJECT_DIR" \
+              -type f \
+              -name "*.dylib" \
+              -not -path "*/.theos/*"
+          )
+
+          if [ "$FOUND" -eq 0 ]; then
+            echo "ERROR: No Dylib was produced."
+            echo
+            echo "The build may have produced a package instead."
+            exit 1
+          fi
+
+          echo
+          echo "===== Dylib artifacts ====="
+          ls -lah artifacts
+
+      - name: Collect packages
+        shell: bash
+        run: |
+          set -e
+
+          mkdir -p artifacts/packages
+
+          find "$PROJECT_DIR" \
+            -type f \
+            \( -name "*.deb" -o -name "*.ipa" \) \
+            -exec cp {} artifacts/packages/ \; || true
+
+          echo "===== Packages ====="
+          find artifacts/packages -type f -maxdepth 1 -print || true
+
+      - name: Upload iXgram artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: iXgram-2.0-build
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 30
